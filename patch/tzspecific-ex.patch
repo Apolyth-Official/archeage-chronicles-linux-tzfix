@@ -1,0 +1,196 @@
+diff --git a/dlls/kernel32/kernel32.spec b/dlls/kernel32/kernel32.spec
+index 5d6de13..199daae 100644
+--- a/dlls/kernel32/kernel32.spec
++++ b/dlls/kernel32/kernel32.spec
+@@ -1546,7 +1546,7 @@
+ @ stdcall -import SwitchToThread()
+ @ stdcall -import SystemTimeToFileTime(ptr ptr)
+ @ stdcall -import SystemTimeToTzSpecificLocalTime (ptr ptr ptr)
+-# @ stub SystemTimeToTzSpecificLocalTimeEx
++@ stdcall -import SystemTimeToTzSpecificLocalTimeEx(ptr ptr ptr)
+ @ stdcall TerminateJobObject(long long)
+ @ stdcall -import TerminateProcess(long long)
+ @ stdcall -import TerminateThread(long long)
+@@ -1569,7 +1569,7 @@
+ @ stdcall TryEnterCriticalSection(ptr) NTDLL.RtlTryEnterCriticalSection
+ @ stdcall -import TrySubmitThreadpoolCallback(ptr ptr ptr)
+ @ stdcall -import TzSpecificLocalTimeToSystemTime(ptr ptr ptr)
+-# @ stub TzSpecificLocalTimeToSystemTimeEx
++@ stdcall -import TzSpecificLocalTimeToSystemTimeEx(ptr ptr ptr)
+ # @ stub -arch=x86_64 uaw_lstrcmpW
+ # @ stub -arch=x86_64 uaw_lstrcmpiW
+ # @ stub -arch=x86_64 uaw_lstrlenW
+diff --git a/dlls/kernel32/tests/time.c b/dlls/kernel32/tests/time.c
+index 7f759d0..d0a3934 100644
+--- a/dlls/kernel32/tests/time.c
++++ b/dlls/kernel32/tests/time.c
+@@ -32,6 +32,8 @@ static int (WINAPI *pGetCalendarInfoW)(LCID,CALID,CALTYPE,LPWSTR,int,LPDWORD);
+ static DWORD (WINAPI *pGetDynamicTimeZoneInformation)(DYNAMIC_TIME_ZONE_INFORMATION*);
+ static void (WINAPI *pGetSystemTimePreciseAsFileTime)(LPFILETIME);
+ static BOOL (WINAPI *pGetTimeZoneInformationForYear)(USHORT, PDYNAMIC_TIME_ZONE_INFORMATION, LPTIME_ZONE_INFORMATION);
++static BOOL (WINAPI *pSystemTimeToTzSpecificLocalTimeEx)(const DYNAMIC_TIME_ZONE_INFORMATION *, const SYSTEMTIME *, SYSTEMTIME *);
++static BOOL (WINAPI *pTzSpecificLocalTimeToSystemTimeEx)(const DYNAMIC_TIME_ZONE_INFORMATION *, const SYSTEMTIME *, SYSTEMTIME *);
+ static ULONG (WINAPI *pNtGetTickCount)(void);
+ 
+ #define SECSPERMIN         60
+@@ -1260,6 +1262,54 @@ static void test_processor_idle_cycle_time(void)
+     ok( size == cpu_count * sizeof(ULONG64), "got %lu.\n", size );
+ }
+ 
++static void test_TzSpecificLocalTimeEx(void)
++{
++    /* Egypt had daylight saving time in August 2014 but not in 2013 */
++    static const struct { WORD year, local_hour; } tests[] = { { 2013, 14 }, { 2014, 15 } };
++    DYNAMIC_TIME_ZONE_INFORMATION dyn_tzinfo;
++    SYSTEMTIME utc, local, back;
++    unsigned int i;
++    BOOL ret;
++
++    if (!pSystemTimeToTzSpecificLocalTimeEx || !pTzSpecificLocalTimeToSystemTimeEx)
++    {
++        win_skip("SystemTimeToTzSpecificLocalTimeEx or TzSpecificLocalTimeToSystemTimeEx not available\n");
++        return;
++    }
++
++    memset(&dyn_tzinfo, 0, sizeof(dyn_tzinfo));
++    lstrcpyW(dyn_tzinfo.TimeZoneKeyName, L"Egypt Standard Time");
++    dyn_tzinfo.Bias = -120;
++
++    for (i = 0; i < ARRAY_SIZE(tests); i++)
++    {
++        memset(&utc, 0, sizeof(utc));
++        utc.wYear = tests[i].year;
++        utc.wMonth = 8;
++        utc.wDay = 15;
++        utc.wHour = 12;
++
++        memset(&local, 0xcc, sizeof(local));
++        ret = pSystemTimeToTzSpecificLocalTimeEx(&dyn_tzinfo, &utc, &local);
++        ok(ret, "SystemTimeToTzSpecificLocalTimeEx failed, err %lu\n", GetLastError());
++        if (!ret) continue;
++        ok(local.wHour == tests[i].local_hour, "%u: expected hour %u, got %u\n",
++           tests[i].year, tests[i].local_hour, local.wHour);
++
++        memset(&back, 0xcc, sizeof(back));
++        ret = pTzSpecificLocalTimeToSystemTimeEx(&dyn_tzinfo, &local, &back);
++        ok(ret, "TzSpecificLocalTimeToSystemTimeEx failed, err %lu\n", GetLastError());
++        if (!ret) continue;
++        ok(back.wYear == utc.wYear && back.wMonth == utc.wMonth && back.wDay == utc.wDay && back.wHour == utc.wHour,
++           "%u: round trip gave %u-%u-%u %u:00\n", tests[i].year, back.wYear, back.wMonth, back.wDay, back.wHour);
++    }
++
++    ret = pSystemTimeToTzSpecificLocalTimeEx(NULL, &utc, &local);
++    ok(ret, "SystemTimeToTzSpecificLocalTimeEx with NULL time zone failed, err %lu\n", GetLastError());
++    ret = pTzSpecificLocalTimeToSystemTimeEx(NULL, &local, &back);
++    ok(ret, "TzSpecificLocalTimeToSystemTimeEx with NULL time zone failed, err %lu\n", GetLastError());
++}
++
+ START_TEST(time)
+ {
+     HMODULE hKernel = GetModuleHandleA("kernel32");
+@@ -1272,6 +1322,8 @@ START_TEST(time)
+     pGetDynamicTimeZoneInformation = (void *)GetProcAddress(hKernel, "GetDynamicTimeZoneInformation");
+     pGetSystemTimePreciseAsFileTime = (void *)GetProcAddress(hKernel, "GetSystemTimePreciseAsFileTime");
+     pGetTimeZoneInformationForYear = (void *)GetProcAddress(hKernel, "GetTimeZoneInformationForYear");
++    pSystemTimeToTzSpecificLocalTimeEx = (void *)GetProcAddress(hKernel, "SystemTimeToTzSpecificLocalTimeEx");
++    pTzSpecificLocalTimeToSystemTimeEx = (void *)GetProcAddress(hKernel, "TzSpecificLocalTimeToSystemTimeEx");
+     pQueryUnbiasedInterruptTime = (void *)GetProcAddress(hKernel, "QueryUnbiasedInterruptTime");
+     pNtGetTickCount = (void *)GetProcAddress(hntdll, "NtGetTickCount");
+     pRtlQueryUnbiasedInterruptTime = (void *)GetProcAddress(hntdll, "RtlQueryUnbiasedInterruptTime");
+@@ -1289,6 +1341,7 @@ START_TEST(time)
+     test_GetSystemTimeAsFileTime();
+     test_GetSystemTimePreciseAsFileTime();
+     test_GetTimeZoneInformationForYear();
++    test_TzSpecificLocalTimeEx();
+     test_GetTickCount();
+     test_QueryUnbiasedInterruptTime();
+     test_processor_idle_cycle_time();
+diff --git a/dlls/kernelbase/kernelbase.spec b/dlls/kernelbase/kernelbase.spec
+index d004e47..b7873d5 100644
+--- a/dlls/kernelbase/kernelbase.spec
++++ b/dlls/kernelbase/kernelbase.spec
+@@ -1644,7 +1644,7 @@
+ @ stdcall SwitchToThread()
+ @ stdcall SystemTimeToFileTime(ptr ptr)
+ @ stdcall SystemTimeToTzSpecificLocalTime(ptr ptr ptr)
+-@ stub SystemTimeToTzSpecificLocalTimeEx
++@ stdcall SystemTimeToTzSpecificLocalTimeEx(ptr ptr ptr)
+ @ stdcall TerminateProcess(long long)
+ # @ stub TerminateProcessOnMemoryExhaustion
+ @ stdcall TerminateThread(long long)
+@@ -1662,7 +1662,7 @@
+ @ stdcall TryEnterCriticalSection(ptr) ntdll.RtlTryEnterCriticalSection
+ @ stdcall TrySubmitThreadpoolCallback(ptr ptr ptr)
+ @ stdcall TzSpecificLocalTimeToSystemTime(ptr ptr ptr)
+-@ stub TzSpecificLocalTimeToSystemTimeEx
++@ stdcall TzSpecificLocalTimeToSystemTimeEx(ptr ptr ptr)
+ @ stdcall UnhandledExceptionFilter(ptr)
+ @ stdcall UnlockFile(long long long long long)
+ @ stdcall UnlockFileEx(long long long long ptr)
+diff --git a/dlls/kernelbase/locale.c b/dlls/kernelbase/locale.c
+index 798e4be..d1553e4 100644
+--- a/dlls/kernelbase/locale.c
++++ b/dlls/kernelbase/locale.c
+@@ -7402,6 +7402,62 @@ BOOL WINAPI DECLSPEC_HOTPATCH TzSpecificLocalTimeToSystemTime( const TIME_ZONE_I
+ }
+ 
+ 
++static void get_tzinfo_for_year( const DYNAMIC_TIME_ZONE_INFORMATION *dynamic, USHORT year,
++                                 TIME_ZONE_INFORMATION *info )
++{
++    if (GetTimeZoneInformationForYear( year, (DYNAMIC_TIME_ZONE_INFORMATION *)dynamic, info )) return;
++    /* unknown key name: fall back to the static rules in the structure */
++    if (dynamic) memcpy( info, dynamic, sizeof(*info) );
++    else RtlQueryTimeZoneInformation( (RTL_TIME_ZONE_INFORMATION *)info );
++}
++
++
++/***********************************************************************
++ *	SystemTimeToTzSpecificLocalTimeEx   (kernelbase.@)
++ */
++BOOL WINAPI DECLSPEC_HOTPATCH SystemTimeToTzSpecificLocalTimeEx( const DYNAMIC_TIME_ZONE_INFORMATION *dynamic,
++                                                                 const SYSTEMTIME *system,
++                                                                 SYSTEMTIME *local )
++{
++    TIME_ZONE_INFORMATION info;
++
++    TRACE( "(%p,%p,%p)\n", dynamic, system, local );
++
++    if (!system || !local)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    /* the rules are selected by local year, which can differ from the UTC year around New Year */
++    get_tzinfo_for_year( dynamic, system->wYear, &info );
++    if (!SystemTimeToTzSpecificLocalTime( &info, system, local )) return FALSE;
++    if (local->wYear == system->wYear) return TRUE;
++    get_tzinfo_for_year( dynamic, local->wYear, &info );
++    return SystemTimeToTzSpecificLocalTime( &info, system, local );
++}
++
++
++/***********************************************************************
++ *	TzSpecificLocalTimeToSystemTimeEx   (kernelbase.@)
++ */
++BOOL WINAPI DECLSPEC_HOTPATCH TzSpecificLocalTimeToSystemTimeEx( const DYNAMIC_TIME_ZONE_INFORMATION *dynamic,
++                                                                 const SYSTEMTIME *local,
++                                                                 SYSTEMTIME *system )
++{
++    TIME_ZONE_INFORMATION info;
++
++    TRACE( "(%p,%p,%p)\n", dynamic, local, system );
++
++    if (!local || !system)
++    {
++        SetLastError( ERROR_INVALID_PARAMETER );
++        return FALSE;
++    }
++    get_tzinfo_for_year( dynamic, local->wYear, &info );
++    return TzSpecificLocalTimeToSystemTime( &info, local, system );
++}
++
++
+ /***********************************************************************
+  *	VerLanguageNameA   (kernelbase.@)
+  */
