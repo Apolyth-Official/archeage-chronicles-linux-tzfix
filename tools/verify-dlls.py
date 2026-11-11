@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Check the packaged DLLs against your own, unmodified Proton Experimental.
 
+It picks the folder in builds/ whose VERSION matches your Proton Experimental's `version` file.
+
 What it checks (all by reading PE headers with `objdump -p`; nothing is loaded or executed):
-  1. SHA-256 of the packaged DLLs and of your stock DLLs, against SHA256SUMS / STOCK-SHA256SUMS.
+  1. SHA-256 of the packaged DLLs and of your stock DLLs, against that build's SHA256SUMS / STOCK-SHA256SUMS.
   2. Exported names: the packaged kernel32 must add exactly the two new functions, and nothing else
      may be added or removed anywhere.
   3. Imported DLLs: only kernelbase.dll and ntdll.dll may appear. No network, process or registry DLLs.
@@ -84,18 +86,34 @@ def imports(text):
     return found
 
 
+def find_build():
+    have = open(os.path.join(SRC, "version")).readline().strip()
+    root = os.path.join(HERE, "builds")
+    known = []
+    for name in sorted(os.listdir(root)):
+        vfile = os.path.join(root, name, "VERSION")
+        if os.path.isfile(vfile):
+            want = open(vfile).readline().strip()
+            known.append(want)
+            if want == have:
+                return os.path.join(root, name)
+    sys.exit(f"unsupported Proton Experimental build: {have}\nsupported: {known}")
+
+
 def main():
     if subprocess.run(["objdump", "--version"], capture_output=True).returncode != 0:
         sys.exit("objdump not found (install binutils)")
     stock_dir = os.path.join(SRC, "files", "lib", "wine")
     if not os.path.isdir(stock_dir):
         sys.exit(f"Proton Experimental not found at {SRC}")
+    build = find_build()
+    print(f"Build: {os.path.basename(build)}")
 
     print("1. Checksums")
-    ours = read_sums(os.path.join(HERE, "SHA256SUMS"), "dlls/")
-    stock = read_sums(os.path.join(HERE, "STOCK-SHA256SUMS"))
+    ours = read_sums(os.path.join(build, "SHA256SUMS"), "dlls/")
+    stock = read_sums(os.path.join(build, "STOCK-SHA256SUMS"))
     for rel, want in sorted(ours.items()):
-        check(sha(os.path.join(HERE, "dlls", rel)) == want, f"packaged {rel} matches SHA256SUMS")
+        check(sha(os.path.join(build, "dlls", rel)) == want, f"packaged {rel} matches SHA256SUMS")
     for rel, want in sorted(stock.items()):
         check(sha(os.path.join(stock_dir, rel)) == want, f"your stock {rel} matches STOCK-SHA256SUMS (unmodified)")
 
@@ -104,7 +122,7 @@ def main():
             rel = f"{arch}-windows/{dll}.dll"
             print(f"\n2-4. {rel}")
             s_txt = objdump(os.path.join(stock_dir, rel))
-            o_txt = objdump(os.path.join(HERE, "dlls", rel))
+            o_txt = objdump(os.path.join(build, "dlls", rel))
             added, removed = exports(o_txt) - exports(s_txt), exports(s_txt) - exports(o_txt)
             want_added = NEW if dll == "kernel32" else set()
             check(added == want_added and not removed,
